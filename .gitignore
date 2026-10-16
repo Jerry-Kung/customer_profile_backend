@@ -1,0 +1,15 @@
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.egg-info/
+build/
+dist/
+.env
+.env.local
+.env.test
+.env.bak
+.env.*.bak
+data/task-uploads/
+.claude/settings.local.json
