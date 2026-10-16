@@ -20,6 +20,7 @@ def redact_config(config: AppConfig) -> dict[str, Any]:
         "app_env": config.app_env,
         "log_level": config.log_level,
         "workflow_platform": config.workflow_platform,
+        "invitation_strategy_platform": config.invitation_strategy_platform,
         "dify": {
             "base_url": config.dify.base_url,
             "run_url": config.dify.run_url,
@@ -40,6 +41,16 @@ def redact_config(config: AppConfig) -> dict[str, Any]:
             "user_id": config.qingtian.user_id,
             "poll_interval_ms": config.qingtian.poll_interval_ms,
             "poll_timeout_ms": config.qingtian.poll_timeout_ms,
+        },
+        "local": {
+            "base_url": config.local.base_url,
+            "task_path": config.local.task_path,
+            "api_key": _mask_secret(config.local.api_key),
+            "callback_api_key": _mask_secret(config.local.callback_api_key),
+            "callback_path": config.local.callback_path,
+            "submit_timeout_ms": config.local.submit_timeout_ms,
+            "max_retries": config.local.max_retries,
+            "retry_after_default_seconds": config.local.retry_after_default_seconds,
         },
         "mysql": {
             "host": config.mysql.host,

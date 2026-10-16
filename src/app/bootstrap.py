@@ -11,6 +11,7 @@ from src.contracts.registry import default_contract_paths
 from src.infrastructure.db.client import MySQLClient
 from src.infrastructure.db.task_repository import MySQLTaskRepository
 from src.infrastructure.dify.client import DifyClient
+from src.infrastructure.local.client import LocalClient
 from src.infrastructure.qingtian.client import QingTianClient
 from src.infrastructure.storage.task_upload_store import TaskUploadStore
 from src.infrastructure.workflow.output_parser import WorkflowOutputParser
@@ -40,10 +41,10 @@ def bootstrap() -> tuple[AppConfig, MySQLClient, TaskService, list[WorkerExecuto
     executors = [
         WorkerExecutor(
             task_service=task_service,
-            workflow_client=_build_workflow_client(config, logger),
+            workflow_client=_build_workflow_client(config, logger, task_type=task_type),
             output_parser=WorkflowOutputParser(schema_path=contracts.output_schema_path),
             logger=get_logger("worker_executor"),
-            platform_name=config.workflow_platform,
+            platform_name=_platform_for_task_type(config, task_type),
             task_type=task_type,
         )
         for task_type in SUPPORTED_TASK_TYPES
@@ -51,11 +52,31 @@ def bootstrap() -> tuple[AppConfig, MySQLClient, TaskService, list[WorkerExecuto
     return config, db_client, task_service, executors, upload_store
 
 
-def _build_workflow_client(config: AppConfig, logger: logging.Logger) -> WorkflowClient:
-    if config.workflow_platform == "qingtian":
-        logger.info("workflow_client_selected platform=qingtian")
+def _platform_for_task_type(config: AppConfig, task_type: str) -> str:
+    """Which platform serves this task type.
+
+    Only customer_profile moved to the local service; invitation_strategy keeps the platform
+    it had, which is why the two are configured separately.
+    """
+    if task_type == "invitation_strategy":
+        return config.invitation_strategy_platform
+    return config.workflow_platform
+
+
+def _build_workflow_client(
+    config: AppConfig,
+    logger: logging.Logger,
+    *,
+    task_type: str = "customer_profile",
+) -> WorkflowClient:
+    platform = _platform_for_task_type(config, task_type)
+    if platform == "local":
+        logger.info("workflow_client_selected platform=local task_type=%s", task_type)
+        return LocalClient(config=config.local)
+    if platform == "qingtian":
+        logger.info("workflow_client_selected platform=qingtian task_type=%s", task_type)
         return QingTianClient(config=config.qingtian)
-    logger.info("workflow_client_selected platform=dify")
+    logger.info("workflow_client_selected platform=dify task_type=%s", task_type)
     return DifyClient(config=config.dify)
 
 
@@ -80,5 +101,13 @@ def _warn_if_task_type_column_missing(logger, db_client, repository) -> None:
 
 
 def create_application():
-    _, db_client, task_service, _, upload_store = bootstrap()
-    return create_api_app(db_client=db_client, task_service=task_service, upload_store=upload_store)
+    config, db_client, task_service, _, upload_store = bootstrap()
+    return create_api_app(
+        db_client=db_client,
+        task_service=task_service,
+        upload_store=upload_store,
+        local_config=config.local,
+        output_parser=WorkflowOutputParser(
+            schema_path=default_contract_paths().output_schema_path
+        ),
+    )

@@ -58,6 +58,10 @@ class WorkerExecutor:
 
         task_id = claimed.id
         phone = claimed.customer_phonenumber
+        # A deferred client (the local service) acknowledges submission but delivers the
+        # result later through the writeback endpoint, so there is no output to parse here.
+        # Such a task stays `processing` until that writeback arrives.
+        defers_result = bool(getattr(self._workflow_client, "DEFERS_RESULT", False))
 
         try:
             self._logger.info(
@@ -73,6 +77,20 @@ class WorkerExecutor:
                 batch_id=claimed.batch_id,
                 task_type=claimed.task_type,
             )
+            if defers_result:
+                # Submission accepted; the writeback endpoint completes this task later.
+                # Marking it succeeded here would store an empty profile, and marking it
+                # failed would race the writeback that is still coming.
+                self._logger.info(
+                    "worker_task_submitted_deferred id=%s customer_phonenumber=%s "
+                    "task_type=%s platform=%s run_id=%s",
+                    task_id,
+                    phone,
+                    claimed.task_type,
+                    self._platform_name,
+                    output_raw or "<none>",
+                )
+                return "submitted"
             parsed = self._output_parser.parse(output_raw)
             self._task_service.repository.mark_succeeded(
                 task_id=task_id,

@@ -38,6 +38,8 @@ except DifyError as exc:                    # 任何其他 DifyError 子类
     return "failed"
 ```
 
+**延迟结果（`WORKFLOW_PLATFORM=local`）**：本地服务提交后立即返回，结果约 21 分钟后经回写端点到达。`LocalClient` 类属性 `DEFERS_RESULT = True`，`execute_once()` 据此**提交完即返回 `"submitted"`**，既不 `mark_succeeded`（会写入空画像），也不 `mark_failed`（会与仍在路上的回写冲突）。任务保持 `processing`，由 `POST {LOCAL_CALLBACK_PATH}` 收尾。详见 `docs/deploy-and-run.md` §2.1。
+
 **重要：错误必须是 `DifyError` 子类才会被吞**。其它异常（如 DB 异常）会冒出来杀死那一轮 `execute_once()`，但**任务行已被置 processing**——没有自动回滚，会卡在 processing 直到有人手动调 `requeue_stale_processing()`。这是一个目前已知的薄弱点。
 
 ## DifyClient — 调用协议
@@ -119,10 +121,12 @@ inputs = {
 "<exc.code>: <str(exc)>"
 ```
 
-其中 `exc.code` 是 `DifyError.code` 类属性，分别为：
+其中 `exc.code` 是 `DifyError.code` 类属性（`QingTianError` / `LocalError` 同理），分别为：
 - `DIFY_REQUEST_FAILED`
 - `DIFY_TIMEOUT`
 - `DIFY_OUTPUT_INVALID_JSON`
 - `DIFY_OUTPUT_SCHEMA_MISMATCH`
+- `QINGTIAN_REQUEST_FAILED` / `QINGTIAN_TIMEOUT` / `QINGTIAN_OUTPUT_INVALID_JSON`
+- `LOCAL_REQUEST_FAILED` / `LOCAL_TIMEOUT`（本地服务提交阶段；结果校验失败的码由回写端点返回 422，不写库）
 
 读出来由 `routes_tasks._extract_error_code()` 做**前缀字符串匹配**还原成 `code`。**新增错误码必须在两端同时更新**——否则前端拿到的就是兜底的 `TASK_FAILED`。

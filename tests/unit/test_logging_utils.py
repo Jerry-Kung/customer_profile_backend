@@ -7,6 +7,7 @@ from src.config.logging_utils import get_logger, log_config_summary, redact_conf
 from src.config.settings import (
     AppConfig,
     DifyConfig,
+    LocalConfig,
     MigrationConfig,
     MySQLConfig,
     QingTianConfig,
@@ -22,6 +23,7 @@ def _sample_config() -> AppConfig:
         app_env="test",
         log_level="DEBUG",
         workflow_platform="dify",
+        invitation_strategy_platform="dify",
         dify=DifyConfig(
             base_url="http://118.145.238.55",
             run_url="http://118.145.238.55/v1/workflows/run",
@@ -42,6 +44,16 @@ def _sample_config() -> AppConfig:
             user_id="klh",
             poll_interval_ms=2000,
             poll_timeout_ms=2400000,
+        ),
+        local=LocalConfig(
+            base_url="http://10.81.67.210:8099",
+            task_path="/api/v1/tasks",
+            api_key="local-INBOUND-KEY",
+            callback_api_key="local-WRITEBACK-KEY",
+            callback_path="/api/v1/remote/callback/update-profile",
+            submit_timeout_ms=10000,
+            max_retries=3,
+            retry_after_default_seconds=30,
         ),
         mysql=MySQLConfig(
             host="118.145.238.55",
@@ -78,6 +90,11 @@ def test_redact_config_masks_sensitive_values():
     assert "INV-KEY" not in redacted["dify"]["invitation_strategy_api_key"]
     assert "***" in redacted["mysql"]["password"]
     assert "123456xxxx" not in redacted["mysql"]["password"]
+    # The local service's two secrets must be masked like every other credential.
+    assert "***" in redacted["local"]["api_key"]
+    assert "INBOUND-KEY" not in redacted["local"]["api_key"]
+    assert "***" in redacted["local"]["callback_api_key"]
+    assert "WRITEBACK-KEY" not in redacted["local"]["callback_api_key"]
 
 
 def test_log_config_summary_does_not_leak_secret(caplog):
@@ -91,7 +108,11 @@ def test_log_config_summary_does_not_leak_secret(caplog):
     assert "CP-PROD-KEY" not in message
     assert "INV-KEY-xxxxxxx" not in message
     assert "123456xxxx" not in message
+    assert "INBOUND-KEY" not in message
+    assert "WRITEBACK-KEY" not in message
     payload = message.split("config_loaded ", 1)[1]
     data = json.loads(payload)
     assert data["dify"]["api_key_test"].endswith(")")
     assert data["dify"]["invitation_strategy_api_key"].endswith(")")
+    assert data["local"]["api_key"].endswith(")")
+    assert data["local"]["callback_api_key"].endswith(")")

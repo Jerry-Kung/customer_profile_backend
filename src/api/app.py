@@ -12,17 +12,22 @@ from pydantic import ValidationError
 
 from src.api.errors import AppError
 from src.api.middlewares import request_log_middleware
+from src.api.routes_local_callback import build_callback_router
 from src.api.routes_tasks import router as task_router
 from src.config.logging_utils import get_logger
+from src.config.settings import LocalConfig
 from src.domain.task.service import TaskService
 from src.infrastructure.db.client import MySQLClient
 from src.infrastructure.storage.task_upload_store import TaskUploadStore
+from src.infrastructure.workflow.output_parser import WorkflowOutputParser
 
 
 def create_api_app(
     db_client: MySQLClient,
     task_service: TaskService,
     upload_store: TaskUploadStore,
+    local_config: LocalConfig | None = None,
+    output_parser: WorkflowOutputParser | None = None,
 ) -> FastAPI:
     app = FastAPI(title="customer_profile backend", version="0.1.0")
     app.state.db_client = db_client
@@ -99,6 +104,18 @@ def create_api_app(
         return {"status": "ok", "db_status": "up" if db_ok else "down"}
 
     app.include_router(task_router)
+    # The local profile service delivers finished profiles by POSTing back to us. Only wired
+    # when a local config and parser are supplied, so tests and non-local deployments that
+    # build the app without them keep the endpoint closed.
+    if local_config is not None and output_parser is not None:
+        app.include_router(
+            build_callback_router(
+                task_service=task_service,
+                output_parser=output_parser,
+                local_config=local_config,
+                logger=app.state.logger,
+            )
+        )
 
     return app
 

@@ -184,3 +184,24 @@ class TaskResultFailedResponse(BaseModel):
     error_message: str | None = None
     updated_at: str | None = None
     task_type: str = DEFAULT_TASK_TYPE
+
+
+class ProfileWritebackRequest(BaseModel):
+    """Body of the local service's writeback (docs/对外任务接口对接文档.md §6).
+
+    Three top-level keys: `phone`, `batch_id` (echoed verbatim from the submission) and
+    `analysis_result` (the profile payload, validated against the output schema).
+    """
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    phone: str = Field(min_length=1, max_length=32)
+    batch_id: str = Field(min_length=1, max_length=64)
+    analysis_result: dict
+
+    @field_validator("batch_id")
+    @classmethod
+    def reject_blank_batch_id(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("batch_id must not be blank")
+        return v

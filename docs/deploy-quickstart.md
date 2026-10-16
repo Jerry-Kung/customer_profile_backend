@@ -58,7 +58,8 @@ HOST_API_PORT=8080 docker compose up -d   # 或写进 .env
 
 | 变量 | 说明 |
 |---|---|
-| `WORKFLOW_PLATFORM` | `dify`（默认）或 `qingtian`，决定 worker 调用哪个平台，也决定下面哪一组变量必填 |
+| `WORKFLOW_PLATFORM` | `dify`（默认）、`qingtian` 或 `local`，决定 worker 调用哪个平台，也决定下面哪一组变量必填 |
+| `INVITATION_STRATEGY_PLATFORM` | `invitation_strategy` 任务用哪个平台。`WORKFLOW_PLATFORM=local` 时**必填**（`dify` 或 `qingtian`），因为该任务类型本次暂未迁移 |
 
 ### 4.3 必填 — Dify（当 `WORKFLOW_PLATFORM=dify`）
 
@@ -83,7 +84,18 @@ HOST_API_PORT=8080 docker compose up -d   # 或写进 .env
 | `QINGTIAN_INVITATION_STRATEGY_API_KEY` | 邀约策略任务类型的 Key |
 | `QINGTIAN_USER_ID` | 用户标识 |
 
-### 4.5 常用调优项（未来可能经常调整）
+### 4.5 必填 — 本地画像服务（当 `WORKFLOW_PLATFORM=local`）
+
+| 变量 | 说明 |
+|---|---|
+| `LOCAL_BASE_URL` | 本地 Python 画像服务地址，**填实际部署主机**，如 `http://10.81.67.210:8099`（服务通常不与本项目同机，不要用 `127.0.0.1`） |
+| `LOCAL_API_KEY` | 提交任务时的 `X-API-Key`（服务侧的 `INBOUND_API_KEY`） |
+| `LOCAL_CALLBACK_API_KEY` | 服务方回写结果到我方时的共享密钥；留空则回写端点返回 503 |
+| `INVITATION_STRATEGY_PLATFORM` | 必填，`dify` 或 `qingtian` |
+
+与 Dify/QingTian 不同，本地服务**提交后立即返回**，结果约 21 分钟后由服务方回写到本项目（`LOCAL_CALLBACK_PATH`，默认 `/api/v1/remote/callback/update-profile`）。因此任务提交成功后会在 `processing` 停留到回写到达，这属正常现象而非卡死；回写丢失时可重新提交同一手机号恢复。详见 `docs/deploy-and-run.md` §2.1。
+
+### 4.6 常用调优项（未来可能经常调整）
 
 以下两项与业务负载直接相关，是最可能需要日常调整的配置，单独说明：
 
@@ -100,7 +112,7 @@ docker compose up -d
 
 > 注意：`.env` 是在**容器创建时**注入的，`docker compose restart` 不会重新读取 `.env`，必须用 `docker compose up -d` 让 compose 重建受影响的容器，新值才生效。`WORKER_CONCURRENCY` 只影响 worker，`TASK_QUEUE_MAX_WAITING` 在 api 提交任务时生效，`up -d` 会自动重建这两个容器。
 
-### 4.6 其他可选项（有合理默认值，一般不用改）
+### 4.7 其他可选项（有合理默认值，一般不用改）
 
 | 变量 | 默认 | 说明 |
 |---|---|---|

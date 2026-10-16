@@ -30,13 +30,14 @@ cp .env.example .env
 | `APP_ENV` | 环境标识 | `local` |
 | `LOG_LEVEL` | 日志级别 | `INFO` |
 | `WORKER_CONCURRENCY` | Worker 并发线程数 | `8` |
-| `WORKFLOW_PLATFORM` | 工作流平台选择：`dify` 或 `qingtian` | `dify` |
+| `WORKFLOW_PLATFORM` | 工作流平台选择：`dify`、`qingtian` 或 `local` | `dify` |
+| `INVITATION_STRATEGY_PLATFORM` | `invitation_strategy` 任务用哪个平台；`WORKFLOW_PLATFORM=local` 时**必填**（`dify` 或 `qingtian`），其它情况缺省跟随 `WORKFLOW_PLATFORM` | 跟随 `WORKFLOW_PLATFORM` |
 
 > Dify API key 说明：
 > - `DIFY_API_KEY_TEST` / `DIFY_API_KEY_PRODUCTION`：`customer_profile` 任务按 `work_env` 切换使用（旧的 `DIFY_API_KEY` 作为兜底）。
 > - `DIFY_INVITATION_STRATEGY_API_KEY`：`invitation_strategy` 任务专用，不分 test/production（`work_env` 仍透传给 Dify，由工作流内部处理）。
 
-### 2.1 工作流平台切换（Dify ↔ QingTian）
+### 2.1 工作流平台切换（Dify ↔ QingTian ↔ 本地服务）
 
 Worker 在调用工作流时通过 `WORKFLOW_PLATFORM` 决定走哪条适配器：
 
@@ -54,9 +55,37 @@ Worker 在调用工作流时通过 `WORKFLOW_PLATFORM` 决定走哪条适配器�
 
 QingTian 的 API Key 选择规则与 Dify 完全一致：`task_type=invitation_strategy` 优先于 `work_env`。InputData 字段名也与 Dify 现有 inputs 一致（`phone_number / batch_id / work_env`）。
 
+- `WORKFLOW_PLATFORM=local` — 走**本地 Python 画像服务**（原先跑在 Dify / QingTian 上的编排逻辑已用 Python 重写为本服务）。必填项：
+
+| 变量 | 说明 |
+|------|------|
+| `LOCAL_BASE_URL` | 本地服务地址，**必须写实际部署主机**（服务通常不与本项目同机，不要用 `127.0.0.1`） |
+| `LOCAL_API_KEY` | 提交时作为 `X-API-Key` 请求头（即服务侧的 `INBOUND_API_KEY`） |
+| `LOCAL_CALLBACK_API_KEY` | 服务方回写画像到我方时的共享密钥；留空则回写端点整体返回 503（相当于关闭） |
+| `INVITATION_STRATEGY_PLATFORM` | **必填**，取 `dify` 或 `qingtian`——`invitation_strategy` 暂未迁移到本地服务 |
+
+其余可调项：`LOCAL_TASK_PATH`（默认 `/api/v1/tasks`）、`LOCAL_CALLBACK_PATH`（默认 `/api/v1/remote/callback/update-profile`）、`LOCAL_SUBMIT_TIMEOUT_MS`（默认 10000）、`LOCAL_SUBMIT_MAX_RETRIES`（默认 3）、`LOCAL_RETRY_AFTER_DEFAULT_SECONDS`（默认 30）。
+
+#### 本地服务的调用语义：**提交即返回，结果靠回写**
+
+与 Dify / QingTian 的"提交后由 Worker 阻塞轮询到终态"不同，本地服务是**两段式**：
+
+1. Worker 把手机号 `POST` 到 `{LOCAL_BASE_URL}{LOCAL_TASK_PATH}`，服务落库后**立即**返回 200 与 `run_id`（毫秒级）。接口不提供查询与进度，**无法轮询**。
+2. 约 21 分钟后，服务把结果 `POST` 到我方的 `LOCAL_CALLBACK_PATH`，请求体为 `{"phone","batch_id","analysis_result"}`，带 `X-API-Key: <LOCAL_CALLBACK_API_KEY>`。**这一步才把任务置为 `succeeded`**。
+
+因此 `WORKFLOW_PLATFORM=local` 时任务在提交成功后会**停留在 `processing`**，直到回写到达，这是预期状态，不是卡死。`GET /v1/customer-profile/tasks/{phone}/result` 期间返回 202。
+
+几点运维须知：
+
+- **回写失败/丢失**会导致任务长期停留在 `processing`（本地服务没有重推机制时）。恢复办法是重新提交同一手机号（upsert 会重新入队）。
+- 回写端点会校验 `batch_id` 必须是该行"当前这次提交"对应的值；对不上返回 409，避免上一轮的迟到回写覆盖新任务。
+- 回写体里的 `analysis_result` 会用与 Dify 路径**同一个** schema（`contracts/customer-profile-output.schema.json`）校验，`card_id` / `nickname` 缺失会返回 422 并在日志中记录。
+- 手机号校验比本项目提交接口更严：本地服务要求 11 位 `^1[3-9]\d{9}$`。本项目提交接口允许 `+` 与任意长度，这类号码在 Worker 侧会**在提交前**就失败并写入 `error_message`（错误码 `LOCAL_REQUEST_FAILED`）。
+- 失败任务的 `error_message` 前缀为 `LOCAL_*`（`LOCAL_REQUEST_FAILED` / `LOCAL_TIMEOUT`），可据此区分平台归属。
+
 启动时 `config_loaded` 日志会输出 `workflow_platform` 字段，便于核对当前生效平台；同时 bootstrap 会打印 `workflow_client_selected platform=...`。失败任务在 `tasks.error_message` 中保留平台前缀（`DIFY_*` 或 `QINGTIAN_*`），可据此排查归属平台。
 
-回滚到 Dify：将 `.env` 中 `WORKFLOW_PLATFORM` 改回 `dify`（或删除该行）并重启 API + Worker。QingTian 变量空着不会影响 Dify 路径。
+回滚到 Dify：将 `.env` 中 `WORKFLOW_PLATFORM` 改回 `dify`（或删除该行）并重启 API + Worker。QingTian 变量空着不会影响 Dify 路径。同理，从 `local` 回滚只需改回 `dify` / `qingtian`，`LOCAL_*` 变量空着不影响其它平台。
 
 Worker 在无 `queued` 任务时，默认 **不再** 以 INFO 每 2 秒打印 `worker_tick`（避免刷屏）。需要观察轮询心跳时，可将 `LOG_LEVEL` 设为 `DEBUG`。
 
@@ -182,6 +211,7 @@ customer-profile-migrate
 | POST | `/v1/customer-profile/tasks` | 提交任务（异步） |
 | GET | `/v1/customer-profile/tasks` | 按手机号前缀列表 |
 | GET | `/v1/customer-profile/tasks/{phone}/result` | 查询单任务结果 |
+| POST | `/api/v1/remote/callback/update-profile` | **本地服务回写画像**（仅 `WORKFLOW_PLATFORM=local` 注册；需 `X-API-Key`，路径可用 `LOCAL_CALLBACK_PATH` 调整） |
 
 详细请求体与轮询方式见 `docs/frontend-api-guide.md`。
 

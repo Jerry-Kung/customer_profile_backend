@@ -70,6 +70,24 @@ class QingTianConfig:
 
 
 @dataclass(frozen=True)
+class LocalConfig:
+    """Local Python profile service (replaces the Agent platforms for customer_profile).
+
+    The service may run on a different host than this project, so `base_url` is always
+    supplied by configuration — never a hardcoded loopback address.
+    """
+
+    base_url: str
+    task_path: str
+    api_key: str
+    callback_api_key: str
+    callback_path: str
+    submit_timeout_ms: int
+    max_retries: int
+    retry_after_default_seconds: int
+
+
+@dataclass(frozen=True)
 class MySQLConfig:
     host: str
     port: int
@@ -119,8 +137,10 @@ class AppConfig:
     app_env: str
     log_level: str
     workflow_platform: str
+    invitation_strategy_platform: str
     dify: DifyConfig
     qingtian: QingTianConfig
+    local: LocalConfig
     mysql: MySQLConfig
     upload: UploadConfig
     worker: WorkerConfig
@@ -133,7 +153,7 @@ def _default_task_upload_dir() -> Path:
     return Path(__file__).resolve().parents[2] / "data" / "task-uploads"
 
 
-_SUPPORTED_PLATFORMS = ("dify", "qingtian")
+_SUPPORTED_PLATFORMS = ("dify", "qingtian", "local")
 
 
 def load_config() -> AppConfig:
@@ -151,8 +171,15 @@ def load_config() -> AppConfig:
             f"expected one of {', '.join(_SUPPORTED_PLATFORMS)}"
         )
 
-    dify_required = workflow_platform == "dify"
-    qingtian_required = workflow_platform == "qingtian"
+    # invitation_strategy is not migrated yet: it keeps running on whichever Agent platform
+    # it uses today. It cannot inherit `local` implicitly, because that would silently move
+    # a task type this change is not meant to touch — so `local` requires an explicit value.
+    invitation_platform = _invitation_strategy_platform(workflow_platform)
+
+    active_platforms = {workflow_platform, invitation_platform}
+    dify_required = "dify" in active_platforms
+    qingtian_required = "qingtian" in active_platforms
+    local_required = workflow_platform == "local"
 
     legacy_dify_api_key = os.getenv("DIFY_API_KEY", "").strip()
     dify_api_key_test = os.getenv("DIFY_API_KEY_TEST", "").strip() or legacy_dify_api_key
@@ -162,6 +189,7 @@ def load_config() -> AppConfig:
         app_env=os.getenv("APP_ENV", "local").strip() or "local",
         log_level=os.getenv("LOG_LEVEL", "INFO").strip() or "INFO",
         workflow_platform=workflow_platform,
+        invitation_strategy_platform=invitation_platform,
         dify=DifyConfig(
             base_url=_require_or_empty("DIFY_BASE_URL", dify_required),
             run_url=_require_or_empty("DIFY_RUN_URL", dify_required),
@@ -197,6 +225,17 @@ def load_config() -> AppConfig:
             poll_interval_ms=_env_int("QINGTIAN_POLL_INTERVAL_MS", 2000),
             poll_timeout_ms=_env_int("QINGTIAN_POLL_TIMEOUT_MS", 2400000),
         ),
+        local=LocalConfig(
+            base_url=_require_or_empty("LOCAL_BASE_URL", local_required),
+            task_path=_env_str("LOCAL_TASK_PATH", "/api/v1/tasks") or "/api/v1/tasks",
+            api_key=_require_or_empty("LOCAL_API_KEY", local_required),
+            callback_api_key=_require_or_empty("LOCAL_CALLBACK_API_KEY", local_required),
+            callback_path=_env_str("LOCAL_CALLBACK_PATH", "/api/v1/remote/callback/update-profile")
+            or "/api/v1/remote/callback/update-profile",
+            submit_timeout_ms=_env_int("LOCAL_SUBMIT_TIMEOUT_MS", 10000),
+            max_retries=_env_int("LOCAL_SUBMIT_MAX_RETRIES", 3),
+            retry_after_default_seconds=_env_int("LOCAL_RETRY_AFTER_DEFAULT_SECONDS", 30),
+        ),
         mysql=MySQLConfig(
             host=_require_env("MYSQL_HOST"),
             port=_env_int("MYSQL_PORT", 3306),
@@ -226,6 +265,31 @@ def load_config() -> AppConfig:
         ),
         task_queue_max_waiting=_task_queue_max_waiting(),
     )
+
+
+def _invitation_strategy_platform(workflow_platform: str) -> str:
+    raw = os.getenv("INVITATION_STRATEGY_PLATFORM", "").strip().lower()
+    if not raw:
+        if workflow_platform == "local":
+            raise ValueError(
+                "INVITATION_STRATEGY_PLATFORM must be set when WORKFLOW_PLATFORM=local: "
+                "invitation_strategy is not migrated to the local service, so it needs an "
+                "explicit platform (dify or qingtian)"
+            )
+        return workflow_platform
+    if raw not in _SUPPORTED_PLATFORMS:
+        raise ValueError(
+            f"invalid INVITATION_STRATEGY_PLATFORM: {raw!r}; "
+            f"expected one of {', '.join(_SUPPORTED_PLATFORMS)}"
+        )
+    if raw == "local":
+        # The local service implements the customer_profile pipeline only; routing
+        # invitation_strategy at it would submit a task type it cannot serve.
+        raise ValueError(
+            "INVITATION_STRATEGY_PLATFORM cannot be 'local': the local service serves "
+            "customer_profile only, and invitation_strategy is not part of this migration"
+        )
+    return raw
 
 
 def _require_or_empty(key: str, required: bool) -> str:

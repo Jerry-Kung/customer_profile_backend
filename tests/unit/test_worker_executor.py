@@ -86,6 +86,22 @@ class _WorkflowRequestFail:
         raise WorkflowRequestFailed("request fail")
 
 
+class _WorkflowDeferred:
+    """Stands in for LocalClient: acknowledges submission, delivers no output.
+
+    `DEFERS_RESULT` is the flag the executor reads to leave the row in `processing`.
+    """
+
+    DEFERS_RESULT = True
+
+    def __init__(self):
+        self.calls = 0
+
+    def run_workflow(self, **_kwargs) -> str:
+        self.calls += 1
+        return "c2846ca7c73643acaa3da7bbfabf0f9d"
+
+
 class _WorkflowTimeoutFail:
     def run_workflow(self, **_kwargs) -> str:
         raise WorkflowTimeout("timeout")
@@ -257,3 +273,102 @@ def test_executor_timeout_marks_failed():
     assert status == "failed"
     assert repo.failed is not None
     assert "WORKFLOW_TIMEOUT" in repo.failed[1]
+
+
+def test_deferred_client_leaves_task_in_processing():
+    """The local service returns 200 on submission and posts the profile later.
+
+    Marking succeeded here would store an empty profile; marking failed would race the
+    writeback that is still in flight.
+    """
+    repo = _Repo(
+        claimed=TaskRecord(
+            id=20,
+            customer_phonenumber="13415100087",
+            status="processing",
+            batch_id="batch-20261016-01",
+            task_type="customer_profile",
+        )
+    )
+    service = TaskService(repository=repo, logger=_logger())
+    workflow = _WorkflowDeferred()
+    executor = WorkerExecutor(
+        task_service=service,
+        workflow_client=workflow,
+        output_parser=_parser(),
+        logger=_logger(),
+        platform_name="local",
+        task_type="customer_profile",
+    )
+    status = executor.execute_once()
+    assert status == "submitted"
+    assert workflow.calls == 1
+    assert repo.succeeded is None
+    assert repo.failed is None
+
+
+def test_real_local_client_is_treated_as_deferred():
+    """Guards the wiring the executor depends on: the flag must be readable off a real
+    LocalClient instance, not just off a hand-written fake."""
+    from src.config.settings import LocalConfig
+    from src.infrastructure.local.client import LocalClient
+
+    local_client = LocalClient(
+        config=LocalConfig(
+            base_url="http://local-profile.example:8099",
+            task_path="/api/v1/tasks",
+            api_key="k",
+            callback_api_key="c",
+            callback_path="/api/v1/remote/callback/update-profile",
+            submit_timeout_ms=10000,
+            max_retries=3,
+            retry_after_default_seconds=30,
+        )
+    )
+    repo = _Repo(
+        claimed=TaskRecord(
+            id=22,
+            customer_phonenumber="13415100087",
+            status="processing",
+            task_type="customer_profile",
+        )
+    )
+    service = TaskService(repository=repo, logger=_logger())
+    executor = WorkerExecutor(
+        task_service=service,
+        workflow_client=local_client,
+        output_parser=_parser(),
+        logger=_logger(),
+        platform_name="local",
+    )
+    # The client fails fast on a phone the local service would reject, so stub the submit.
+    local_client.run_workflow = lambda **_kw: "run-id-123"  # type: ignore[method-assign]
+    assert executor.execute_once() == "submitted"
+    assert repo.succeeded is None
+    assert repo.failed is None
+
+
+def test_deferred_client_records_run_id_in_log(caplog):
+    repo = _Repo(
+        claimed=TaskRecord(
+            id=21,
+            customer_phonenumber="13415100087",
+            status="processing",
+            task_type="customer_profile",
+        )
+    )
+    service = TaskService(repository=repo, logger=_logger())
+    executor = WorkerExecutor(
+        task_service=service,
+        workflow_client=_WorkflowDeferred(),
+        output_parser=_parser(),
+        logger=_logger(),
+        platform_name="local",
+    )
+    with caplog.at_level(logging.INFO, logger="test_worker_executor"):
+        executor.execute_once()
+    assert any(
+        "worker_task_submitted_deferred" in record.getMessage()
+        and "c2846ca7c73643acaa3da7bbfabf0f9d" in record.getMessage()
+        for record in caplog.records
+    )

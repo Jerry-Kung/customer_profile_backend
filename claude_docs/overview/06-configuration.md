@@ -18,6 +18,8 @@
 | `DIFY_API_KEY_PRODUCTION` | `work_env=production` 用 |
 | `DIFY_USER_ID` | Dify `user` 字段 |
 | `MYSQL_HOST` / `MYSQL_USER` / `MYSQL_PASSWORD` / `MYSQL_DATABASE` | DB 连接 |
+| `LOCAL_BASE_URL` / `LOCAL_API_KEY` / `LOCAL_CALLBACK_API_KEY` | 仅当 `WORKFLOW_PLATFORM=local` 必填 |
+| `INVITATION_STRATEGY_PLATFORM` | 仅当 `WORKFLOW_PLATFORM=local` 必填（`invitation_strategy` 未迁移到本地服务，不能继承 `local`） |
 
 ## 可选变量与默认值
 
@@ -40,6 +42,16 @@
 | `CORS_ALLOW_ORIGINS` | `*` | `,` 分隔；含 `*` 即 wildcard 模式 |
 | `TOS_ACCESS_KEY_ID` / `TOS_ACCESS_KEY_SECRET` / `TOS_REGION` / `TOS_ENDPOINT` / `TOS_BUCKET` | `""` | 火山引擎 TOS；仅 `TosClient` 用，**未在 bootstrap 中被构造** |
 | `TOS_PRESIGNED_URL_EXPIRES_SECONDS` | `3600` | 同上 |
+| `WORKFLOW_PLATFORM` | `dify` | `customer_profile` 走哪个平台：`dify` / `qingtian` / `local` |
+| `INVITATION_STRATEGY_PLATFORM` | 跟随 `WORKFLOW_PLATFORM` | `invitation_strategy` 走哪个平台；`WORKFLOW_PLATFORM=local` 时必须显式给值，且不接受 `local` |
+| `LOCAL_BASE_URL` | `""` | 本地 Python 画像服务地址，**必须写实际部署主机**（通常不与本项目同机） |
+| `LOCAL_TASK_PATH` | `/api/v1/tasks` | 提交路径，拼接在 `LOCAL_BASE_URL` 之后 |
+| `LOCAL_API_KEY` | `""` | 提交时的 `X-API-Key` |
+| `LOCAL_CALLBACK_API_KEY` | `""` | 服务方回写时的共享密钥；留空则回写端点返回 503 |
+| `LOCAL_CALLBACK_PATH` | `/api/v1/remote/callback/update-profile` | 回写端点路径 |
+| `LOCAL_SUBMIT_TIMEOUT_MS` | `10000` | 提交超时（只落库，因此很短） |
+| `LOCAL_SUBMIT_MAX_RETRIES` | `3` | 仅对 429 / 500 重试的次数 |
+| `LOCAL_RETRY_AFTER_DEFAULT_SECONDS` | `30` | 429 无 `Retry-After` 时的兜底等待 |
 | `HOST_API_PORT` | `18008` | docker-compose.yml 用，仅影响宿主机映射端口 |
 
 `HOST_API_PORT` 是**仅 docker-compose 读取**的——不进 Python 进程。
@@ -50,11 +62,17 @@
 AppConfig(frozen=True)
 ├── app_env: str
 ├── log_level: str
+├── workflow_platform: str            # customer_profile 的平台
+├── invitation_strategy_platform: str  # invitation_strategy 的平台（两者可不同）
 ├── dify: DifyConfig
 │   ├── base_url, run_url
 │   ├── api_key_test, api_key_production (脱敏后打印)
 │   ├── user_id, image_mode
 │   └── stream_init_timeout_ms, poll_interval_ms, poll_timeout_ms
+├── qingtian: QingTianConfig (...)
+├── local: LocalConfig (base_url, task_path, api_key, callback_api_key,
+│                       callback_path, submit_timeout_ms, max_retries,
+│                       retry_after_default_seconds)
 ├── mysql: MySQLConfig (host, port, user, password, database)
 ├── upload: UploadConfig (base_dir: Path, max_bytes_per_file: int)
 ├── worker: WorkerConfig (concurrency, poll_interval_seconds [float])

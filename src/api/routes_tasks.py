@@ -214,6 +214,11 @@ def _extract_error_code(error_message: str | None) -> str:
         "DIFY_TIMEOUT",
         "DIFY_OUTPUT_INVALID_JSON",
         "DIFY_OUTPUT_SCHEMA_MISMATCH",
+        "QINGTIAN_REQUEST_FAILED",
+        "QINGTIAN_TIMEOUT",
+        "QINGTIAN_OUTPUT_INVALID_JSON",
+        "LOCAL_REQUEST_FAILED",
+        "LOCAL_TIMEOUT",
         "WORKER_UNEXPECTED_ERROR",
     }
     if not error_message:
