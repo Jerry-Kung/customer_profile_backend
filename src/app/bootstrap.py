@@ -26,6 +26,7 @@ def bootstrap() -> tuple[AppConfig, MySQLClient, TaskService, list[WorkerExecuto
     configure_root_logging()
     logger = get_logger("bootstrap")
     log_config_summary(logger, config)
+    _log_process_targets(config, logger)
     db_client = MySQLClient(config.mysql)
     repository = MySQLTaskRepository(db_client, queue_max_waiting=config.task_queue_max_waiting)
     _warn_if_task_type_column_missing(logger, db_client, repository)
@@ -50,6 +51,27 @@ def bootstrap() -> tuple[AppConfig, MySQLClient, TaskService, list[WorkerExecuto
         for task_type in SUPPORTED_TASK_TYPES
     ]
     return config, db_client, task_service, executors, upload_store
+
+
+def _log_process_targets(config: AppConfig, logger: logging.Logger) -> None:
+    """Print the endpoints this process actually talks to, as resolved config.
+
+    The API and the Worker are separate processes that share a queue through MySQL, so when a
+    submitted task is never consumed, the first thing to rule out is that the two are pointed
+    at the same database. Config is frozen and never re-read, so this line is the whole truth
+    for the lifetime of the process.
+    """
+    logger.info(
+        "process_targets db=%s:%s/%s workflow_platform=%s invitation_strategy_platform=%s "
+        "local_base_url=%s worker_pool_task_types=%s",
+        config.mysql.host,
+        config.mysql.port,
+        config.mysql.database,
+        config.workflow_platform,
+        config.invitation_strategy_platform,
+        config.local.base_url or "<unset>",
+        list(SUPPORTED_TASK_TYPES),
+    )
 
 
 def _platform_for_task_type(config: AppConfig, task_type: str) -> str:

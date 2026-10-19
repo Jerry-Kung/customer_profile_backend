@@ -91,13 +91,39 @@ class LocalClient:
         try:
             with httpx.Client(timeout=None) as client:
                 for attempt in range(1, attempts + 1):
+                    started = time.monotonic()
                     try:
                         response = client.post(url, json=payload, headers=headers, timeout=timeout)
                     except httpx.TimeoutException as exc:
+                        _log.warning(
+                            "local_submit_timeout attempt=%s elapsed_ms=%s timeout_s=%s",
+                            attempt,
+                            int((time.monotonic() - started) * 1000),
+                            self.config.submit_timeout_ms / 1000,
+                        )
                         if attempt < attempts:
                             _log.warning("local_submit_timeout_retrying attempt=%s", attempt)
                             continue
                         raise LocalTimeout("local task submit timed out") from exc
+                    except httpx.HTTPError as exc:
+                        # Connection refused / DNS failure / TLS error. Without this line the
+                        # whole failure surfaces only as a task row that never leaves processing.
+                        _log.warning(
+                            "local_submit_transport_error attempt=%s netloc=%s elapsed_ms=%s exc_type=%s detail=%s",
+                            attempt,
+                            parts.netloc or "",
+                            int((time.monotonic() - started) * 1000),
+                            type(exc).__name__,
+                            str(exc)[:400],
+                        )
+                        raise
+
+                    _log.info(
+                        "local_submit_response attempt=%s status=%s elapsed_ms=%s",
+                        attempt,
+                        response.status_code,
+                        int((time.monotonic() - started) * 1000),
+                    )
 
                     if response.status_code in _RETRYABLE_STATUSES and attempt < attempts:
                         delay = self._retry_delay(response)
@@ -119,6 +145,12 @@ class LocalClient:
             # Unreachable: every loop branch either returns or raises.
             raise LocalRequestFailed("local submit exhausted retries")
         except httpx.HTTPError as exc:
+            _log.warning(
+                "local_submit_request_failed netloc=%s exc_type=%s detail=%s",
+                parts.netloc or "",
+                type(exc).__name__,
+                str(exc)[:400],
+            )
             raise LocalRequestFailed(f"local submit request failed: {exc}") from exc
 
     def _retry_delay(self, response: httpx.Response) -> float:

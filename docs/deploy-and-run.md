@@ -248,3 +248,27 @@ API_E2E_BASE_URL=http://127.0.0.1:8000 ./scripts/api_e2e_curl.sh
 - **API 启动报缺环境变量**：检查 `.env` 是否与启动命令在同一工作目录，或已 `export` / `set` 全部必填项。
 - **Worker 不消费**：确认 MySQL 连通、任务状态为 `queued`、Worker 进程在跑。
 - **容器内访问本机文件路径**：提交任务里的 `wechat_*_image` 若为本地路径，须是 **Worker 容器内可读路径**；演示环境建议使用 URL 或与 Worker 挂载相同卷。
+
+### 8.1 提交后 Worker 不转发（日志无异常）——先比 `process_targets`
+
+API 与 Worker 是**两个进程**，只通过 MySQL 队列耦合。若前端提交后本地服务没收到任何请求、且两边日志都没有异常，最常见的原因不是代码，而是**两个进程没有指向同一个数据库或同一份配置**：
+
+1. 两个进程启动时都会打一行 `process_targets`，直接比两行的 `db=` 与 `local_base_url=`：
+   - `db=` 是进程**实际连接**的 MySQL（`host:port/database`）。两行不一致时，任务入队进的是 API 的库，Worker 在另一个库里永远查不到活干。
+   - `local_base_url=` 是 Worker 会把手机号 POST 过去的地址。
+2. `docker compose` 只在**创建容器时**把 `.env` 注入进程。改了 `.env` 后必须重建容器才生效：
+
+   ```bash
+   docker compose up -d --force-recreate api worker
+   ```
+
+   只 `restart` 不重建，容器仍持有旧的配置快照——`config_loaded` 与 `process_targets` 会显示修改前的值，这正是"改了配置却没反应"的典型现场。
+3. 每分钟一次的心跳 `worker_queue_depth pools={'customer_profile': N, ...}` 用来区分三种沉默：
+   - `N=0`：Worker 连的库里确实没有待跑任务——**去查数据库指向**，不是查 Worker。
+   - `N>0` 但一直没有 `task_claimed`：Worker 看得到任务却领不到，多为 `task_type` 列缺失或类型名对不上（见 §5 关于 `003` 的说明）。
+   - 完全没有这一行：supervisor 线程没起来或进程已退出。
+4. 领到任务后会依次出现 `task_claimed` → `worker_workflow_invoke_begin`（含 `platform=`、`customer_phonenumber=`、`batch_id=`）→ `local_run_workflow_start`（含 `netloc=`、`path=`）→ `local_submit_response`（含 `status=`、`elapsed_ms=`）。**日志停在哪一行，问题就在那一步**：
+   - 停在 `worker_workflow_invoke_begin` 之后：连不上 `LOCAL_BASE_URL`，同一次调用会有 `local_submit_transport_error`（连接拒绝/超时/DNS）或 `local_submit_timeout`。
+   - 停在 `local_submit_response` 且 `status=401/403/422`：密钥或手机号格式被服务端拒（`LOCAL_API_KEY` 要等于服务侧的 `INBOUND_API_KEY`；号码须为 11 位 `^1[3-9]\d{9}$`）。
+   - 有 `worker_task_submitted_deferred`：转发**已成功**，任务停在 `processing` 等回写（约 21 分钟），这是预期状态。
+5. 手机号不合规时 Worker 会在**发请求前**就失败，看不到任何 `local_*` 行，只有 `worker_task_failed error_code=LOCAL_REQUEST_FAILED`。

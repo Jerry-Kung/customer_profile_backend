@@ -22,6 +22,9 @@ class TaskRepository(Protocol):
     def count_queued(self) -> int:
         ...
 
+    def count_queued_by_type(self, *, task_type: str) -> int:
+        ...
+
     def list_by_prefix(
         self,
         *,

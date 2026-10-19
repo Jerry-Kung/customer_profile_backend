@@ -41,6 +41,26 @@ class WorkerExecutor:
     def task_type(self) -> str | None:
         return self._task_type
 
+    def queue_depth(self) -> int | None:
+        """How many queued rows this pool can see, or None when it cannot be probed.
+
+        Diagnostic only: the heartbeat uses it to make the difference between "nothing to do"
+        and "this pool is polling a queue that never has work" visible at INFO level. Any
+        failure here must not disturb the worker loop, so it degrades to None.
+        """
+        if self._task_type is None:
+            return None
+        counter = getattr(self._task_service.repository, "count_queued_by_type", None)
+        if counter is None:
+            return None
+        try:
+            return int(counter(task_type=self._task_type))
+        except Exception:
+            self._logger.exception(
+                "worker_queue_depth_probe_failed task_type=%s", self._task_type
+            )
+            return None
+
     def execute_once(self) -> str:
         # Claim is isolated: a DB error here must NOT bubble up (would kill the worker thread).
         # No task is in 'processing' yet, so return "error" and let the runner retry on next tick.
@@ -65,11 +85,15 @@ class WorkerExecutor:
 
         try:
             self._logger.info(
-                "worker_workflow_invoke_begin task_id=%s platform=%s task_type=%s work_env=%s",
+                "worker_workflow_invoke_begin task_id=%s platform=%s task_type=%s work_env=%s "
+                "customer_phonenumber=%s batch_id=%s defers_result=%s",
                 task_id,
                 self._platform_name,
                 claimed.task_type,
                 claimed.work_env,
+                phone,
+                claimed.batch_id,
+                defers_result,
             )
             output_raw = self._workflow_client.run_workflow(
                 customer_phonenumber=claimed.customer_phonenumber,

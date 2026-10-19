@@ -27,7 +27,8 @@ class TaskService:
             task_type=task_type,
         )
         self.logger.info(
-            "task_submitted customer_phonenumber=%s task_type=%s work_env=%s batch_id=%s status=%s",
+            "task_submitted id=%s customer_phonenumber=%s task_type=%s work_env=%s batch_id=%s status=%s",
+            record.id,
             customer_phonenumber,
             task_type,
             work_env,

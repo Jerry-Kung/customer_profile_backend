@@ -79,6 +79,27 @@ class WorkerRunner:
         t.start()
         return t
 
+    def _queue_depth_snapshot(self) -> dict[str, int | None]:
+        """Queued depth per pool, for the heartbeat.
+
+        A worker whose pools all report 0 is polling an empty queue; that is a completely
+        different situation from a pool that keeps seeing work and never claims it, and
+        without this both look like silence at INFO level.
+        """
+        snapshot: dict[str, int | None] = {}
+        for executor in self._executors:
+            label = _executor_label(executor)
+            probe = getattr(executor, "queue_depth", None)
+            if probe is None:
+                snapshot[label] = None
+                continue
+            try:
+                snapshot[label] = probe()
+            except Exception:
+                # The probe is diagnostic; a failure must never break the supervisor.
+                snapshot[label] = None
+        return snapshot
+
     def _supervisor_loop(self) -> None:
         while True:
             # wait() returns True iff stop_event was set; that is our exit signal.
@@ -88,6 +109,13 @@ class WorkerRunner:
                 self._check_and_respawn()
             except Exception:
                 self._logger.exception("worker_supervisor_check_failed")
+            try:
+                self._logger.info(
+                    "worker_queue_depth pools=%s",
+                    self._queue_depth_snapshot(),
+                )
+            except Exception:
+                self._logger.exception("worker_queue_depth_log_failed")
 
     def _check_and_respawn(self) -> None:
         alive_after = 0

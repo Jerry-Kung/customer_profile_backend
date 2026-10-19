@@ -221,6 +221,43 @@ class MySQLTaskRepository:
         finally:
             conn.close()
 
+    def count_queued_by_type(self, *, task_type: str) -> int:
+        """Queued depth for one task type, using the same column fallback as claim_next_queued.
+
+        The worker heartbeat calls this so an empty queue can be told apart from a queue the
+        pool is unable to claim. With the `task_type` column missing, a pool for any
+        non-default type can never claim anything, and this reports its true (unclaimable)
+        depth rather than a misleading zero.
+        """
+        conn = self._db_client.connect()
+        try:
+            has_task_type = self._has_task_type_column(conn)
+            cursor = conn.cursor(dictionary=True)
+            if has_task_type:
+                cursor.execute(
+                    """
+                    SELECT COUNT(1) AS total
+                    FROM customer_profile_tasks
+                    WHERE status = 'queued' AND task_type = %s
+                    """,
+                    (task_type,),
+                )
+            elif task_type == _DEFAULT_TASK_TYPE:
+                # Without the column every queued row reads as the default type.
+                cursor.execute(
+                    """
+                    SELECT COUNT(1) AS total
+                    FROM customer_profile_tasks
+                    WHERE status = 'queued'
+                    """
+                )
+            else:
+                return 0
+            row = cursor.fetchone() or {"total": 0}
+            return int(row["total"])
+        finally:
+            conn.close()
+
     def count_queued(self, conn=None) -> int:
         owns_conn = conn is None
         db_conn = conn or self._db_client.connect()
